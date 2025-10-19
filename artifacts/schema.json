@@ -1,0 +1,59 @@
+{
+  "num_cols": [
+    "LotArea",
+    "OverallQual",
+    "YearBuilt",
+    "GrLivArea",
+    "GarageCars"
+  ],
+  "cat_cols": [
+    "Neighborhood",
+    "HouseStyle",
+    "CentralAir",
+    "Alley",
+    "PoolQC",
+    "SaleCondition"
+  ],
+  "feature_order": [
+    "LotArea",
+    "OverallQual",
+    "YearBuilt",
+    "GrLivArea",
+    "GarageCars",
+    "Neighborhood_CollgCr",
+    "Neighborhood_Edwards",
+    "Neighborhood_NAmes",
+    "Neighborhood_OldTown",
+    "Neighborhood_Somerst",
+    "HouseStyle_1.5Fin",
+    "HouseStyle_1Story",
+    "HouseStyle_2Story",
+    "HouseStyle_SLvl",
+    "CentralAir_Y",
+    "Alley_Pave",
+    "PoolQC_Fa",
+    "PoolQC_Gd",
+    "PoolQC_TA",
+    "SaleCondition_Abnorml",
+    "SaleCondition_Family",
+    "SaleCondition_Normal",
+    "SaleCondition_Partial"
+  ],
+  "high_corr_drop": [],
+  "config": {
+    "numeric_impute": "median",
+    "numeric_impute_fill_value": null,
+    "categorical_impute": "most_frequent",
+    "categorical_impute_fill_value": "missing",
+    "outlier_method": "iqr",
+    "iqr_multiplier": 1.5,
+    "outlier_strategy": "winsorize",
+    "scaler": "robust",
+    "encoder": "onehot",
+    "drop_onehot": "if_binary",
+    "variance_threshold": 0.0,
+    "corr_threshold": 0.95,
+    "target_column": "SalePrice",
+    "save_artifacts_dir": "artifacts"
+  }
+}

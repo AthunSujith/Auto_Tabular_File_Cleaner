@@ -1,0 +1,60 @@
+# =====================================================================
+# AutoClean: end-to-end configuration
+# Make this the only file you edit. The CLI will read and execute this.
+# =====================================================================
+
+# ------------------------
+# Project / I/O paths
+# ------------------------
+io:
+  # Absolute or relative path to the input dataset.
+  # Supports .csv, .parquet, .pq
+  input_path: "data/raw/dat.csv"
+
+  # Where to write the processed CSV (directories auto-created).
+  output_path: "data/processed/processed.csv"
+
+  # Folder to store artifacts like schema.json and columns.txt
+  artifacts_dir: "artifacts"
+
+  # Also write a text file with the final feature names (no target)
+  save_columns_list: true
+
+  # If input has a target column, name it here so it’s excluded from transforms
+  # and appended back to the processed CSV.
+  target_column: "SalePrice"   # set to null if no target, e.g., null
+
+# ------------------------
+# Preprocessing options
+# These map 1:1 to CleanConfig in cleaning_pipeline.py
+# ------------------------
+processing:
+  # ---- Missing values ----
+  numeric_impute: "median"            # "mean" | "median" | "most_frequent" | "constant"
+  numeric_impute_fill_value: null     # used only if numeric_impute == "constant"
+
+  categorical_impute: "most_frequent" # "most_frequent" | "constant"
+  categorical_impute_fill_value: "missing"  # used only if categorical_impute == "constant"
+
+  # ---- Outliers ----
+  outlier_method: "iqr"               # "iqr" | "none"
+  iqr_multiplier: 1.5                 # 1.5 (mild) or 3.0 (extreme)
+  outlier_strategy: "winsorize"       # "winsorize" | "clip" | "none"
+
+  # ---- Scaling ----
+  scaler: "robust"                    # "standard" | "minmax" | "robust" | "none"
+
+  # ---- Encoding ----
+  encoder: "onehot"                   # "onehot" | "ordinal"
+  drop_onehot: "if_binary"            # "if_binary" | "first" | "none"
+
+  # ---- Feature selection ----
+  variance_threshold: 0.0             # >0.0 removes near-constant features
+  corr_threshold: 0.95                # drop highly correlated numeric columns; null to disable
+
+# ------------------------
+# Logging / run options (optional)
+# ------------------------
+run:
+  # "info" prints high-level steps; "debug" prints more details
+  log_level: "info"                   # "info" | "debug"
