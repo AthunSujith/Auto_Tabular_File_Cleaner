@@ -101,6 +101,53 @@ When enabled, the pipeline will write `artifacts/schema.json` (default
 feature order, list of dropped correlated columns, and the config snapshot.
 This is intentionally a human-readable JSON for transparency.
 
+
+## Streamlit Dashboard (optional)
+
+The repository includes a Streamlit-based interactive EDA dashboard in
+`streamlit_dashboard.py`. It is designed to work well with the AutoCleaner
+output CSVs but can load any CSV or Parquet file. The dashboard provides
+interactive filtering, distribution views, correlation heatmaps, pairwise
+scatter plots, missingness overview, and quick target-aware visual checks.
+
+Key features
+- Upload CSV or Parquet files or use the built-in demo dataset (synthetic
+	house-prices-like data) for quick exploration.
+- Numeric filters: choose numeric columns and filter with range sliders.
+- Categorical filters: multiselect-based filters for categories.
+- Distributions: histograms, KDE-like density, and marginal box plots.
+- Box/Violin plots grouped by category.
+- Correlation heatmap with selectable method (Pearson/Spearman/Kendall).
+- Pairwise scatter with optional color/size encodings.
+- Missingness overview bar chart and a simple target vs feature quick view.
+- Download filtered subset as CSV.
+
+How to run the dashboard
+1. Install Streamlit and Plotly (if not installed):
+
+```powershell
+pip install streamlit plotly
+```
+
+2. Start the dashboard from the repository root:
+
+```powershell
+streamlit run streamlit_dashboard.py
+```
+
+3. Use the left sidebar to upload your dataset or flip the "Use demo dataset"
+	 toggle to load the synthetic demo. The sidebar also contains filters,
+	 correlation method selection, and an export button for the filtered CSV.
+
+Tips
+- If you plan to explore AutoCleaner output, run the pipeline first and then
+	load the processed CSV in the dashboard for a stable feature set.
+- For large datasets, use the filtering controls to reduce the dataset size
+	before plotting to keep the dashboard responsive.
+- The dashboard is intentionally simple and easy to extend; add custom
+	visualizations or analyses as separate Streamlit components.
+
+
 ## Notes and recommendations
 
 - Use `robust` scaling when your numeric features contain outliers. If you
@@ -122,5 +169,8 @@ If you need help using or extending this pipeline, open an issue or contact
 
 Athun Sujith
 athundeveloperid59@gmail.com
+
+
+
 
 
