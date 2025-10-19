@@ -22,6 +22,7 @@ import pandas as pd  # tabular data ops
 import streamlit as st  # the dashboard framework
 import plotly.express as px  # high‑level interactive plots
 import plotly.graph_objects as go  # lower‑level plot primitives
+from pathlib import Path  # file extension handling for uploads
 
 
 # ---------------------
@@ -40,6 +41,7 @@ try:
     st.set_option("deprecation.showPyplotGlobalUse", False)
 except Exception:
     pass
+
 
 # ---------------------
 # Utility: demo dataset (synthetic House Prices‑like)
@@ -86,7 +88,11 @@ def load_table(upload: bytes, ext: str) -> pd.DataFrame:
     if ext == ".csv":
         return pd.read_csv(io.BytesIO(upload))
     elif ext in {".parquet", ".pq"}:
-        return pd.read_parquet(io.BytesIO(upload))
+        try:
+            return pd.read_parquet(io.BytesIO(upload))
+        except Exception:
+            # Fallback: mislabelled CSV uploaded as parquet
+            return pd.read_csv(io.BytesIO(upload), engine="python", encoding_errors="replace")
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
@@ -107,7 +113,8 @@ uploader = st.sidebar.file_uploader("Upload CSV or Parquet", type=["csv", "parqu
 use_demo = st.sidebar.toggle("Use demo dataset", value=not bool(uploader))
 
 if uploader and not use_demo:
-    ext = ".csv" if uploader.type == "text/csv" else ".parquet"
+    name = uploader.name or "uploaded_file"
+    ext = Path(name).suffix.lower() or ".csv"
     df_raw = load_table(uploader.getvalue(), ext)
 else:
     df_raw = make_demo_df()
