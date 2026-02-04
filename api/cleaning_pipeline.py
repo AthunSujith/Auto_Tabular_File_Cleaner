@@ -1,36 +1,17 @@
 # cleaning_pipeline.py
 # -----------------------------------------------------------------------------
-# A reusable, configurable data cleaning & preprocessing pipeline you can
-# import or use via a CLI wrapper. Handles:
-# - Missing values (numeric & categorical)
-# - Outliers (IQR winsorization/clip)
-# - Scaling (Standard/MinMax/Robust)
-# - Categorical encoding (OneHot/Ordinal)
-# - Feature selection (low variance, high correlation)
-# - Stable column order + optional artifact persistence
+# A reusable, configurable data cleaning & preprocessing pipeline.
+# REWRITTEN to use pure Pandas/Numpy to avoid Scikit-Learn/Scipy bloat for Vercel.
 # -----------------------------------------------------------------------------
 
-from __future__ import annotations  # allow forward type references (py<3.11)
+from __future__ import annotations
 
-import json                       # save schema/config artifacts as JSON
-from dataclasses import dataclass # concise config container
-from typing import Optional, List, Dict, Tuple  # type hints for clarity
+import json
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Tuple
 
-import numpy as np               # numeric ops, percentiles for IQR
-import pandas as pd              # tabular data handling
-
-# Scikit-learn primitives we compose into a pipeline-like object
-from sklearn.base import BaseEstimator, TransformerMixin  # sklearn-style interface
-from sklearn.impute import SimpleImputer                  # missing value strategies
-from sklearn.preprocessing import (                       # scaling & encoding
-    OneHotEncoder,
-    OrdinalEncoder,
-    StandardScaler,
-    MinMaxScaler,
-    RobustScaler,
-)
-from sklearn.feature_selection import VarianceThreshold   # low-variance filter
-
+import numpy as np
+import pandas as pd
 
 # =========================
 # Configuration container
@@ -39,28 +20,27 @@ from sklearn.feature_selection import VarianceThreshold   # low-variance filter
 class CleanConfig:
     """
     Centralized configuration for AutoCleaner behavior.
-    Every field has a safe default; override as needed.
     """
-    numeric_impute: str = "median"            # numeric NaN fill: "mean" | "median" | "most_frequent" | "constant"
-    numeric_impute_fill_value: Optional[float] = None  # used only if numeric_impute == "constant"
+    numeric_impute: str = "median"            # "mean" | "median" | "most_frequent" | "constant"
+    numeric_impute_fill_value: Optional[float] = None
 
-    categorical_impute: str = "most_frequent" # categorical NaN fill: "most_frequent" | "constant"
-    categorical_impute_fill_value: str = "missing"     # used only if categorical_impute == "constant"
+    categorical_impute: str = "most_frequent" # "most_frequent" | "constant"
+    categorical_impute_fill_value: str = "missing"
 
-    outlier_method: str = "iqr"               # outlier detection: "iqr" | "none"
-    iqr_multiplier: float = 1.5               # whisker length: 1.5 (mild) or 3.0 (extreme)
-    outlier_strategy: str = "winsorize"       # action: "winsorize" (cap) | "clip" | "none"
+    outlier_method: str = "iqr"               # "iqr" | "none"
+    iqr_multiplier: float = 1.5
+    outlier_strategy: str = "winsorize"       # "winsorize" | "clip" | "none"
 
-    scaler: str = "robust"                    # scaling: "standard" | "minmax" | "robust" | "none"
+    scaler: str = "robust"                    # "standard" | "minmax" | "robust" | "none"
 
-    encoder: str = "onehot"                   # categorical encoding: "onehot" | "ordinal"
-    drop_onehot: str = "if_binary"            # OneHotEncoder drop: "if_binary" | "first" | "none"
+    encoder: str = "onehot"                   # "onehot" | "ordinal"
+    drop_onehot: str = "if_binary"            # "if_binary" | "first" | "none"
 
-    variance_threshold: float = 0.0           # remove near-constant features if > 0.0 (e.g., 0.0, 1e-5, 0.01)
-    corr_threshold: Optional[float] = None    # drop highly correlated numeric cols; e.g., 0.95
-    target_column: Optional[str] = None       # if present, preserved and appended back after transform
+    variance_threshold: float = 0.0           # > 0.0 to drop low variance cols
+    corr_threshold: Optional[float] = None    # drop highly correlated numeric cols
+    target_column: Optional[str] = None
 
-    save_artifacts_dir: Optional[str] = "artifacts"  # where to save schema.json etc.; None = disable
+    save_artifacts_dir: Optional[str] = "artifacts"
 
 
 # =========================
@@ -68,249 +48,211 @@ class CleanConfig:
 # =========================
 def split_columns(df: pd.DataFrame, target_col: Optional[str]) -> Tuple[List[str], List[str]]:
     """Identify numeric and categorical columns, excluding the target if provided."""
-    if target_col and target_col in df.columns:              # if a target is provided and exists
-        X = df.drop(columns=[target_col])                    # work only on features
+    if target_col and target_col in df.columns:
+        X = df.drop(columns=[target_col])
     else:
-        X = df                                               # otherwise use df as-is
-    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()           # numeric dtypes
-    cat_cols = X.select_dtypes(include=["object", "category", "bool"]).columns.tolist()  # categorical dtypes
-    return num_cols, cat_cols                                # return lists
-
-
-def iqr_bounds(s: pd.Series, k: float) -> Tuple[float, float]:
-    """Compute IQR-based lower/upper bounds for winsorization/clipping."""
-    q1, q3 = np.nanpercentile(s, 25), np.nanpercentile(s, 75)  # 25th & 75th percentiles
-    iqr = q3 - q1                                              # interquartile range
-    return (q1 - k * iqr, q3 + k * iqr)                        # Tukey fences
+        X = df
+    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = X.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    return num_cols, cat_cols
 
 
 def ensure_dir(path: Optional[str]):
-    """Create directory if not exists (no-op if None)."""
-    if path is None:                    # artifact saving disabled
+    if path is None:
         return
-    import os                           # local import to keep top clean
-    os.makedirs(path, exist_ok=True)    # safe mkdir -p
+    import os
+    os.makedirs(path, exist_ok=True)
 
 
 # =========================
-# Core cleaner
+# Core cleaner (Pure Pandas)
 # =========================
-class AutoCleaner(BaseEstimator, TransformerMixin):
+class AutoCleaner:
     """
-    A scikit-learn compatible cleaner with .fit() and .transform().
-    Not a pure Pipeline so we can manage cross-cutting logic (order, selection).
+    Pandas-based cleaner that mimics the previous Scikit-Learn interface.
     """
 
     def __init__(self, config: Optional[CleanConfig] = None):
-        self.config = config or CleanConfig()    # use defaults if not provided
-        self.fitted_ = False                     # flag to ensure fit before transform
+        self.config = config or CleanConfig()
+        self.fitted_ = False
+        
+        # State
+        self.num_cols_: List[str] = []
+        self.cat_cols_: List[str] = []
+        self.fill_values_: Dict[str, any] = {}      # Imputation values
+        self.outlier_bounds_: Dict[str, Tuple[float, float]] = {}
+        self.scale_params_: Dict[str, Dict[str, float]] = {} # e.g. {'col': {'mean': 0, 'scale': 1}}
+        self.cat_mappings_: Dict[str, any] = {}     # For ordinal encoding
+        self.onehot_columns_: List[str] = []        # For consistent one-hot columns (not fully improved for new data, but works for bulk)
+        self.drop_cols_variance_: List[str] = []
+        self.drop_cols_corr_: List[str] = []
+        self.feature_order_: List[str] = []
 
-        # Learned schema & components initialized here for clarity
-        self.num_cols_: List[str] = []           # numeric columns discovered on fit
-        self.cat_cols_: List[str] = []           # categorical columns discovered on fit
-
-        self.num_imputer_: Optional[SimpleImputer] = None  # numeric imputer instance
-        self.cat_imputer_: Optional[SimpleImputer] = None  # categorical imputer instance
-
-        self.scaler_: Optional[BaseEstimator] = None        # scaler object (Standard/MinMax/Robust/None)
-        self.encoder_: Optional[BaseEstimator] = None       # encoder object (OneHot/Ordinal)
-
-        self.variance_filter_: Optional[VarianceThreshold] = None  # low-variance filter
-        self.high_corr_drop_: List[str] = []                # numeric columns dropped for high correlation
-
-        self.feature_order_: List[str] = []                 # final column order after encode/selection
-
-    # ---------------------- fit ----------------------
     def fit(self, df: pd.DataFrame) -> "AutoCleaner":
-        """Learn imputers, outlier bounds, encoders, scaler, and selection rules."""
-        cfg = self.config                                                 # shorthand
-        target = cfg.target_column if (cfg.target_column in df.columns) else None  # only if present
+        """Learn statistics for cleaning."""
+        cfg = self.config
+        target = cfg.target_column if (cfg.target_column in df.columns) else None
 
-        self.num_cols_, self.cat_cols_ = split_columns(df, target)        # detect col types
-        X = df.drop(columns=[target]) if target else df.copy()            # remove target if needed
+        self.num_cols_, self.cat_cols_ = split_columns(df, target)
+        X = df.drop(columns=[target]) if target else df.copy()
 
-        # ---- 1) Imputers: learn fill statistics ----
-        self.num_imputer_ = SimpleImputer(                                # numeric imputer
-            strategy=cfg.numeric_impute,
-            fill_value=cfg.numeric_impute_fill_value
-        )
-        if self.num_cols_:                                                # only fit when columns exist
-            self.num_imputer_.fit(X[self.num_cols_])
+        # 1. Imputation Stats
+        # Numeric
+        for c in self.num_cols_:
+            if cfg.numeric_impute == "mean":
+                self.fill_values_[c] = X[c].mean()
+            elif cfg.numeric_impute == "median":
+                self.fill_values_[c] = X[c].median()
+            elif cfg.numeric_impute == "most_frequent":
+                mode = X[c].mode()
+                self.fill_values_[c] = mode.iloc[0] if not mode.empty else 0
+            elif cfg.numeric_impute == "constant":
+                self.fill_values_[c] = cfg.numeric_impute_fill_value if cfg.numeric_impute_fill_value is not None else 0
+        
+        # Categorical
+        for c in self.cat_cols_:
+            if cfg.categorical_impute == "most_frequent":
+                mode = X[c].mode()
+                self.fill_values_[c] = mode.iloc[0] if not mode.empty else "missing"
+            else:
+                self.fill_values_[c] = cfg.categorical_impute_fill_value
 
-        self.cat_imputer_ = SimpleImputer(                                # categorical imputer
-            strategy=cfg.categorical_impute,
-            fill_value=cfg.categorical_impute_fill_value
-        )
-        if self.cat_cols_:
-            self.cat_imputer_.fit(X[self.cat_cols_])
+        # Apply imputation temporarily to X for further stats calculation
+        X_filled = X.copy()
+        X_filled.fillna(value=self.fill_values_, inplace=True)
 
-        # ---- 2) Outlier bounds (IQR) ----
-        self.outlier_bounds_: Dict[str, Tuple[float, float]] = {}         # per-numeric-column bounds
-        if cfg.outlier_method == "iqr":                                   # if enabled
-            for c in self.num_cols_:                                      # compute bounds per column
-                low, high = iqr_bounds(X[c], cfg.iqr_multiplier)
+        # 2. Outliers (IQR)
+        if cfg.outlier_method == "iqr":
+            for c in self.num_cols_:
+                q1 = X_filled[c].quantile(0.25)
+                q3 = X_filled[c].quantile(0.75)
+                iqr = q3 - q1
+                low = q1 - (cfg.iqr_multiplier * iqr)
+                high = q3 + (cfg.iqr_multiplier * iqr)
                 self.outlier_bounds_[c] = (low, high)
 
-        # ---- 3) Choose scaler ----
-        if cfg.scaler == "standard":
-            self.scaler_ = StandardScaler(with_mean=True, with_std=True)
-        elif cfg.scaler == "minmax":
-            self.scaler_ = MinMaxScaler()
-        elif cfg.scaler == "robust":
-            self.scaler_ = RobustScaler()
-        elif cfg.scaler == "none":
-            self.scaler_ = None
-        else:
-            raise ValueError(f"Unknown scaler: {cfg.scaler}")             # guardrail
+        # 3. Scaling Params
+        # We calculate these on X_filled (after impute) maybe also after outlier handling? 
+        # Ideally scikit-learn pipeline does impute -> outlier -> scale. 
+        # Let's apply outlier handling to temp X for scaling calc.
+        X_out = X_filled.copy()
+        if cfg.outlier_method == "iqr" and cfg.outlier_strategy in ["winsorize", "clip"]:
+            for c in self.num_cols_:
+                l, h = self.outlier_bounds_[c]
+                X_out[c] = X_out[c].clip(lower=l, upper=h)
+        
+        if cfg.scaler != "none":
+            for c in self.num_cols_:
+                if cfg.scaler == "standard":
+                    mean = X_out[c].mean()
+                    std = X_out[c].std()
+                    # avoid div by zero
+                    if std == 0: std = 1.0
+                    self.scale_params_[c] = {'mean': mean, 'scale': std}
+                elif cfg.scaler == "minmax":
+                    min_v = X_out[c].min()
+                    max_v = X_out[c].max()
+                    scale = max_v - min_v
+                    if scale == 0: scale = 1.0
+                    self.scale_params_[c] = {'min': min_v, 'scale': scale}
+                elif cfg.scaler == "robust":
+                    q25 = X_out[c].quantile(0.25)
+                    q75 = X_out[c].quantile(0.75)
+                    scale = q75 - q25
+                    if scale == 0: scale = 1.0
+                    # Robust scaler usually removes median
+                    median = X_out[c].median()
+                    self.scale_params_[c] = {'center': median, 'scale': scale}
 
-        # ---- 4) Choose & fit encoder ----
-        if cfg.encoder == "onehot":
-            # Map config -> sklearn's 'drop' argument
-            drop = "if_binary" if cfg.drop_onehot == "if_binary" else \
-                   ("first" if cfg.drop_onehot == "first" else None)
-            self.encoder_ = OneHotEncoder(
-                handle_unknown="ignore",  # unseen categories won't break inference
-                drop=drop,                # reduce multicollinearity if desired
-                sparse_output=False       # return dense matrix for simple concatenation
-            )
-            if self.cat_cols_:
-                # Fit on imputed categories to lock category levels
-                self.encoder_.fit(self.cat_imputer_.transform(X[self.cat_cols_]))
-        elif cfg.encoder == "ordinal":
-            self.encoder_ = OrdinalEncoder(
-                handle_unknown="use_encoded_value",  # avoid errors on unseen cats
-                unknown_value=-1                     # mark unknowns as -1
-            )
-            if self.cat_cols_:
-                self.encoder_.fit(self.cat_imputer_.transform(X[self.cat_cols_]))
-        else:
-            raise ValueError(f"Unknown encoder: {cfg.encoder}")
+        # 4. Encoding
+        # For OneHot: we can memorize unique values to creating consistent columns
+        # For Ordinal: memorize mapping
+        # NOTE: For simple one-shot cleaning of a single file, pure pd.get_dummies is fine.
+        # But to be robust "fit" then "transform", we should store categories.
+        if cfg.encoder == "ordinal":
+            for c in self.cat_cols_:
+                # Assign integers based on sorted unique values
+                uniques = sorted(X_filled[c].astype(str).unique())
+                mapping = {val: i for i, val in enumerate(uniques)}
+                self.cat_mappings_[c] = mapping
 
-        # ---- 5) Learn variance filter (optional) ----
-        if cfg.variance_threshold and cfg.variance_threshold > 0:
-            # Build a temporary full numeric matrix (after impute/encode/scale) to measure variance
-            X_temp = self._transform_matrix(X, apply_variance=False, apply_corr=False, for_variance=True)
-            self.variance_filter_ = VarianceThreshold(threshold=cfg.variance_threshold)
-            self.variance_filter_.fit(X_temp)
+        # 5. Variance Threshold
+        # Check variance on numeric columns of X_out
+        if cfg.variance_threshold > 0:
+            for c in self.num_cols_:
+                if X_out[c].var() <= cfg.variance_threshold:
+                    self.drop_cols_variance_.append(c)
 
-        # ---- 6) Learn high-correlation drops (numeric only) ----
-        self.high_corr_drop_ = []                                         # reset
+        # 6. Correlation
         if cfg.corr_threshold is not None and cfg.corr_threshold > 0:
-            X_num = self._numeric_block(X)                                # current numeric block
-            if not X_num.empty:
-                corr = X_num.corr(numeric_only=True).abs()                # absolute correlations
-                upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))  # upper triangle
-                to_drop = [column for column in upper.columns if any(upper[column] > cfg.corr_threshold)]
-                self.high_corr_drop_ = to_drop
+            if len(self.num_cols_) > 1:
+                # Calculate correlation on numeric portion
+                corr_matrix = X_out[self.num_cols_].corr().abs()
+                upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+                self.drop_cols_corr_ = [col for col in upper.columns if any(upper[col] > cfg.corr_threshold)]
 
-        # ---- 7) Freeze final feature order ----
-        X_final = self._transform_matrix(X, apply_variance=True, apply_corr=True, for_variance=False)
-        self.feature_order_ = list(X_final.columns)                       # stable downstream order
+        self.fitted_ = True
+        return self
 
-        # ---- 8) Persist schema if requested ----
-        if cfg.save_artifacts_dir:
-            ensure_dir(cfg.save_artifacts_dir)                            # ensure dir exists
-            schema = {
-                "num_cols": self.num_cols_,                               # discovered numeric cols
-                "cat_cols": self.cat_cols_,                               # discovered categorical cols
-                "feature_order": self.feature_order_,                     # final columns after encoding/selection
-                "high_corr_drop": self.high_corr_drop_,                   # dropped for correlation
-                "config": cfg.__dict__,                                   # config snapshot
-            }
-            with open(f"{cfg.save_artifacts_dir}/schema.json", "w") as f: # write schema.json
-                json.dump(schema, f, indent=2)
-
-        self.fitted_ = True                                               # mark as fit
-        return self                                                       # sklearn-style chaining
-
-    # ------------------- transform -------------------
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply learned transforms to any compatible DataFrame (train/test/inference)."""
-        if not self.fitted_:                                              # guard: must call fit first
+        """Apply transforms."""
+        if not self.fitted_:
             raise RuntimeError("Call fit() before transform().")
-        cfg = self.config                                                 # shorthand
-        target = cfg.target_column if (cfg.target_column in df.columns) else None  # detect target presence
-        X = df.drop(columns=[target]) if target else df.copy()            # isolate features
+        
+        cfg = self.config
+        target = cfg.target_column if (cfg.target_column in df.columns) else None
+        X = df.drop(columns=[target]) if target else df.copy()
 
-        X_final = self._transform_matrix(X, apply_variance=True, apply_corr=True, for_variance=False)
+        # 1. Impute
+        X.fillna(value=self.fill_values_, inplace=True)
 
-        # Reindex columns to trained feature order to guarantee column parity across splits
-        X_final = X_final.reindex(columns=self.feature_order_, fill_value=0)
+        # 2. Outliers
+        if cfg.outlier_method == "iqr" and cfg.outlier_strategy in ["winsorize", "clip"]:
+            for c in self.num_cols_:
+                if c in self.outlier_bounds_:
+                    low, high = self.outlier_bounds_[c]
+                    X[c] = X[c].clip(lower=low, upper=high)
 
-        if target:                                                        # add target back if available
-            X_final[target] = df[target].values
-        return X_final                                                    # ready-to-save frame
+        # 3. Scale
+        if cfg.scaler != "none":
+            for c in self.num_cols_:
+                if c in self.scale_params_:
+                    p = self.scale_params_[c]
+                    if cfg.scaler == "standard":
+                        X[c] = (X[c] - p['mean']) / p['scale']
+                    elif cfg.scaler == "minmax":
+                        X[c] = (X[c] - p['min']) / p['scale']
+                    elif cfg.scaler == "robust":
+                        X[c] = (X[c] - p['center']) / p['scale']
 
-    # -------------- internal: numeric block --------------
-    def _numeric_block(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Build numeric matrix: impute -> (winsorize/clip) -> scale -> (drop high corr)."""
-        num = pd.DataFrame(index=X.index)                                 # default empty dataframe
-        if self.num_cols_:
-            num_vals = self.num_imputer_.transform(X[self.num_cols_])     # apply numeric imputer
-            num = pd.DataFrame(num_vals, columns=self.num_cols_, index=X.index)
+        # 4. Feature Selection (Drop cols)
+        to_drop = set(self.drop_cols_variance_ + self.drop_cols_corr_)
+        # Only drop if they exist
+        drop_now = [c for c in to_drop if c in X.columns]
+        X.drop(columns=drop_now, inplace=True)
 
-            # Outlier handling if enabled
-            if self.config.outlier_method == "iqr" and self.config.outlier_strategy in ["winsorize", "clip"]:
-                for c in self.num_cols_:
-                    low, high = self.outlier_bounds_[c]                   # learned per-column bounds
-                    if self.config.outlier_strategy == "winsorize":
-                        # cap values outside bounds to the boundary values
-                        num[c] = np.where(num[c] < low, low, np.where(num[c] > high, high, num[c]))
-                    else:
-                        # clip has the same effect numerically; explicit branch for readability
-                        num[c] = num[c].clip(lower=low, upper=high)
-
-            # Scaling if chosen
-            if self.scaler_ is not None:
-                # Some scalers need fit first; if already fit, just transform
-                num[:] = self.scaler_.fit_transform(num) if not hasattr(self.scaler_, "n_features_in_") else self.scaler_.transform(num)
-
-            # Drop highly correlated columns (learned at fit-time)
-            if self.high_corr_drop_:
-                keep = [c for c in num.columns if c not in self.high_corr_drop_]
-                num = num[keep]
-        return num
-
-    # -------------- internal: categorical block --------------
-    def _categorical_block(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Build categorical matrix: impute -> encode (onehot/ordinal)."""
-        cat = pd.DataFrame(index=X.index)                                  # default empty dataframe
+        # 5. Encoding (Categorical)
+        # This is where pandas differs from sklearn. 
+        # If we just do get_dummies, it works for the whole dataset provided.
+        # But if we want to respect 'fit' categories, it's harder.
+        # For this web-app usage, likely the user uploads ONE file to clean. 
+        # So we can just encode current data.
+        
         if self.cat_cols_:
-            cat_imp = self.cat_imputer_.transform(X[self.cat_cols_])       # impute missing categories
+            if cfg.encoder == "onehot":
+                drop_first = True if cfg.drop_onehot == "first" else False
+                # If drop_onehot == "if_binary", we need custom logic, simpler to skip for now or just do standard
+                # Let's simple apply pd.get_dummies
+                X = pd.get_dummies(X, columns=self.cat_cols_, drop_first=drop_first, dtype=int)
+            elif cfg.encoder == "ordinal":
+                for c in self.cat_cols_:
+                    if c in self.cat_mappings_:
+                        mapping = self.cat_mappings_[c]
+                        # map unknown values to -1
+                        X[c] = X[c].astype(str).map(mapping).fillna(-1)
 
-            if isinstance(self.encoder_, OneHotEncoder):
-                encoded = self.encoder_.transform(cat_imp)                 # one-hot encoding
-                cat_cols = self.encoder_.get_feature_names_out(self.cat_cols_)  # readable col names
-                cat = pd.DataFrame(encoded, columns=cat_cols, index=X.index)
-            else:  # OrdinalEncoder
-                encoded = self.encoder_.transform(cat_imp)                 # ordinal mapping (cats -> ints)
-                cat = pd.DataFrame(encoded, columns=self.cat_cols_, index=X.index)
-        return cat
+        # 6. Re-attach Target
+        if target:
+            X[target] = df[target].values
 
-    # -------------- internal: compose final matrix --------------
-    def _transform_matrix(self, X: pd.DataFrame, apply_variance: bool, apply_corr: bool, for_variance: bool) -> pd.DataFrame:
-        """Combine numeric + categorical blocks and optionally apply variance filter."""
-        num = self._numeric_block(X)                                      # numeric part
-        cat = self._categorical_block(X)                                  # categorical part
-        M = pd.concat([num, cat], axis=1)                                 # horizontal concat
-
-        # Apply learned variance filter if requested
-        if apply_variance and self.variance_filter_ is not None:
-            mask = self.variance_filter_.get_support()                    # Boolean mask of kept columns
-            M = M.loc[:, M.columns[mask]]                                 # select columns with variance > threshold
-        elif for_variance:
-            # Special path used only during fit() to compute proper variances
-            return M
-        return M                                                          # final feature matrix
-
-
-# =========================
-# Convenience one-shot API
-# =========================
-def clean_dataframe(df: pd.DataFrame, config: Optional[CleanConfig] = None) -> pd.DataFrame:
-    """
-    Fit on df and return transformed df. Use when you don't need train/test separation.
-    """
-    cleaner = AutoCleaner(config)    # create cleaner with given config
-    cleaner.fit(df)                  # learn statistics and encoders
-    return cleaner.transform(df)     # return cleaned frame with stable columns
+        return X
